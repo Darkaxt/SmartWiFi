@@ -31,7 +31,11 @@ LAN, where Android's own selection keeps clinging to a weak network.
 adb shell dumpsys activity service io.github.darkaxt.smartwifi/io.github.darkaxt.smartwifi.SwitchService
 ```
 
-Logcat tag: `SmartWiFi`.
+Add `log 500` to print the last 500 lines of the persistent event log. The log records every
+connection change and its cause (Smart WiFi vs Android/user), internet loss and recovery,
+Shizuku state, boots, and a status line every 30 minutes. It survives restarts (two rotating
+files, about 1 MB in total), and the app's **Share full log** button exports it. Logcat tag:
+`SmartWiFi`.
 
 ## Building
 

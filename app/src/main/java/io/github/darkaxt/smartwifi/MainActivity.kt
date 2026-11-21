@@ -51,6 +51,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        StateHub.init(this)
         Shizuku.addRequestPermissionResultListener(permissionListener)
         if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
@@ -160,12 +161,24 @@ private fun Screen(prefs: Prefs) {
         Card(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 Text("Recent activity", style = MaterialTheme.typography.titleMedium)
+                val context = LocalContext.current
+                Button(onClick = { shareLog(context) }) { Text("Share full log") }
                 if (state.events.isEmpty()) Text("Nothing yet")
                 state.events.take(25).forEach { Text(it, style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace) }
             }
         }
         Spacer(Modifier.width(1.dp))
     }
+}
+
+private fun shareLog(context: android.content.Context) {
+    // Binder transactions cap out near 1 MB; keep the newest ~200 KB of the log.
+    val text = StateHub.exportText().takeLast(200_000).ifEmpty { "Log is empty" }
+    val send = android.content.Intent(android.content.Intent.ACTION_SEND)
+        .setType("text/plain")
+        .putExtra(android.content.Intent.EXTRA_SUBJECT, "Smart WiFi log")
+        .putExtra(android.content.Intent.EXTRA_TEXT, text)
+    context.startActivity(android.content.Intent.createChooser(send, "Share Smart WiFi log"))
 }
 
 @Composable

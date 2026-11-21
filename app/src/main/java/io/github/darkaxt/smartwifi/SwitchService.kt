@@ -53,6 +53,9 @@ class SwitchService : Service() {
     private var savedAt = 0L
     private var verify: Pair<Int, Long>? = null // target network id to deadline
     private var lastScanRequestAt = 0L
+    private var lastConnKey: String? = null
+    private var lastShizuku: ShizukuState? = null
+    private var lastHeartbeatAt = 0L
 
     private val netCallback = object : ConnectivityManager.NetworkCallback() {
         override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
@@ -60,6 +63,7 @@ class SwitchService : Service() {
             if (validated) unvalidatedSince = null
             else if (unvalidatedSince == null) unvalidatedSince = now()
             if (wifiValidated != validated) {
+                StateHub.log(if (validated) "Internet check: OK" else "Internet check: no internet on Wi-Fi")
                 wifiValidated = validated
                 wake.trySend(Unit)
             }
@@ -77,6 +81,7 @@ class SwitchService : Service() {
     override fun onCreate() {
         super.onCreate()
         prefs = Prefs(this)
+        StateHub.init(this)
         createChannel()
         startForeground(NOTIFICATION_ID, notification("Starting…"), ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
         getSystemService(ConnectivityManager::class.java).registerNetworkCallback(
@@ -118,6 +123,10 @@ class SwitchService : Service() {
     private suspend fun tick() {
         val shizuku = ShizukuShell.state()
         StateHub.update { it.copy(shizuku = shizuku) }
+        if (shizuku != lastShizuku) {
+            StateHub.log("Shizuku: ${shizuku.name.lowercase().replace('_', ' ')}")
+            lastShizuku = shizuku
+        }
         if (shizuku != ShizukuState.READY) {
             updateNotification("Waiting for Shizuku")
             return
@@ -126,6 +135,7 @@ class SwitchService : Service() {
         val status = ShizukuShell.wifi("status")?.let(::parseStatus) ?: return
         val t = now()
 
+        logConnectionChange(status)
         checkPendingVerification(status, t)
 
         if (!status.enabled) {
@@ -152,6 +162,13 @@ class SwitchService : Service() {
         val eval = engine.evaluate(now(), status, scans, saved, unvalidated)
         publish(status, eval.currentScore, eval.candidates, eval.decision.reason, scans.minOfOrNull { it.ageSeconds })
 
+        if (t - lastHeartbeatAt >= HEARTBEAT_MS) {
+            lastHeartbeatAt = t
+            val best = eval.candidates.firstOrNull()?.let { "${it.ssid} ${it.band.label} ${it.rssi} dBm score ${it.score}" } ?: "none"
+            val where = if (status.connected) "${status.ssid} ${status.frequency?.let { Band.of(it).label }} ${status.rssi} dBm score ${eval.currentScore}" else "not connected"
+            StateHub.log("Status: $where; best alternative: $best; saved networks: ${saved.size}")
+        }
+
         val decision = eval.decision
         if (decision is Decision.Switch && verify == null) {
             val target = decision.target
@@ -163,6 +180,32 @@ class SwitchService : Service() {
             } else {
                 StateHub.log("Connect to ${target.ssid} failed: $result")
                 engine.penalize(target.networkId, now())
+            }
+        }
+    }
+
+    /** Logs every connection change, attributing it to Smart WiFi when it matches our pending switch. */
+    private fun logConnectionChange(status: WifiStatus) {
+        val band = status.frequency?.let { Band.of(it).label } ?: "?"
+        val key = when {
+            !status.enabled -> "off"
+            status.connected -> "${status.networkId}|${status.ssid}|$band"
+            else -> "disconnected"
+        }
+        if (key == lastConnKey) return
+        val first = lastConnKey == null
+        lastConnKey = key
+        when (key) {
+            "off" -> StateHub.log("Wi-Fi is off")
+            "disconnected" -> if (!first) StateHub.log("Wi-Fi disconnected")
+            else -> {
+                val cause = when {
+                    first -> "at service start"
+                    verify?.first == status.networkId -> "by Smart WiFi"
+                    else -> "by Android or you"
+                }
+                StateHub.log("Connected to ${status.ssid} ($band, ${status.rssi} dBm) $cause")
+                savedAt = 0 // pick up a network that was just saved
             }
         }
     }
@@ -192,10 +235,15 @@ class SwitchService : Service() {
         updateNotification(text)
     }
 
-    // --- Diagnostics: `adb shell dumpsys activity service <pkg>/.SwitchService [evaluate|connect <id>]`
+    // --- Diagnostics: `adb shell dumpsys activity service <pkg>/.SwitchService [evaluate|log [n]|connect <id>]`
     override fun dump(fd: FileDescriptor?, writer: PrintWriter, args: Array<out String>?) {
         when (args?.firstOrNull()) {
             "evaluate" -> { wake.trySend(Unit); writer.println("evaluation requested") }
+            "log" -> {
+                val n = args.getOrNull(1)?.toIntOrNull() ?: 200
+                StateHub.tail(n).forEach(writer::println)
+                return
+            }
             "connect" -> {
                 val id = args.getOrNull(1)?.toIntOrNull()
                 if (id == null) writer.println("usage: connect <networkId>")
@@ -246,6 +294,7 @@ class SwitchService : Service() {
         const val ACTION_STOP = "io.github.darkaxt.smartwifi.STOP"
         private const val CHANNEL = "status"
         private const val NOTIFICATION_ID = 1
+        private const val HEARTBEAT_MS = 30 * 60_000L
         private fun now() = System.currentTimeMillis()
 
         fun start(context: Context) {
