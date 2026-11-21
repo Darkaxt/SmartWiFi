@@ -1,0 +1,116 @@
+name: Build signed Smart WiFi APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    if: github.repository == 'Darkaxt/SmartWiFi'
+    runs-on: ubuntu-latest
+    env:
+      SMARTWIFI_STORE_PASSWORD: ${{ secrets.SMARTWIFI_KEYSTORE_PASSWORD }}
+      SMARTWIFI_KEY_ALIAS: ${{ secrets.SMARTWIFI_KEY_ALIAS }}
+      SMARTWIFI_KEY_PASSWORD: ${{ secrets.SMARTWIFI_KEY_PASSWORD }}
+    outputs:
+      version: ${{ steps.package.outputs.version }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Install Android SDK packages
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
+            "platform-tools" \
+            "platforms;android-37.0" \
+            "build-tools;36.0.0"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Prepare stable signing key
+        env:
+          KEYSTORE_B64: ${{ secrets.SMARTWIFI_KEYSTORE_B64 }}
+        run: |
+          set -euo pipefail
+          if [ -z "$KEYSTORE_B64" ] || [ -z "$SMARTWIFI_STORE_PASSWORD" ] \
+            || [ -z "$SMARTWIFI_KEY_ALIAS" ] || [ -z "$SMARTWIFI_KEY_PASSWORD" ]; then
+            echo "::error::Stable signing secrets are not fully configured."
+            exit 1
+          fi
+          KEYSTORE_PATH="$RUNNER_TEMP/smartwifi-release.p12"
+          printf '%s' "$KEYSTORE_B64" | base64 --decode > "$KEYSTORE_PATH"
+          echo "SMARTWIFI_STORE_FILE=$KEYSTORE_PATH" >> "$GITHUB_ENV"
+
+      - name: Test and build signed release APK
+        run: ./gradlew --no-daemon :app:testReleaseUnitTest :app:lintVitalRelease :app:assembleRelease
+
+      - name: Verify package ID and signature
+        run: |
+          set -euo pipefail
+          AAPT="$ANDROID_HOME/build-tools/36.0.0/aapt"
+          APKSIGNER="$ANDROID_HOME/build-tools/36.0.0/apksigner"
+          APK="app/build/outputs/apk/release/app-release.apk"
+          PACKAGE=$("$AAPT" dump badging "$APK" | sed -n "s/^package: name='\([^']*\)'.*/\1/p" | head -n 1)
+          EXPECTED_PACKAGE=$(sed -n 's/^SMARTWIFI_APP_ID=//p' gradle.properties)
+          [ "$PACKAGE" = "$EXPECTED_PACKAGE" ] || { echo "::error::Unexpected package ID: $PACKAGE"; exit 1; }
+          CERT=$("$APKSIGNER" verify --print-certs "$APK" \
+            | awk -F': ' '/certificate SHA-256 digest/{gsub(/[[:space:]]/,"",$2); print tolower($2); exit}')
+          EXPECTED_CERT=$(sed -n 's/^SMARTWIFI_SIGNING_SHA256=//p' gradle.properties | tr '[:upper:]' '[:lower:]' | tr -d ':')
+          [ -n "$EXPECTED_CERT" ] || { echo "::error::Pinned certificate fingerprint is missing."; exit 1; }
+          [ "$CERT" = "$EXPECTED_CERT" ] || { echo "::error::Unexpected signing certificate: $CERT"; exit 1; }
+          echo "Verified $PACKAGE signed by $CERT"
+
+      - name: Prepare artifact
+        id: package
+        run: |
+          set -euo pipefail
+          VERSION=$(sed -n 's/^SMARTWIFI_VERSION_NAME=//p' gradle.properties)
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          mkdir dist
+          cp app/build/outputs/apk/release/app-release.apk "dist/SmartWiFi-$VERSION.apk"
+          (cd dist && sha256sum "SmartWiFi-$VERSION.apk" > "SmartWiFi-$VERSION.apk.sha256")
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SmartWiFi-${{ steps.package.outputs.version }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    needs: build
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: SmartWiFi-${{ needs.build.outputs.version }}
+          path: dist
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release create "$GITHUB_REF_NAME" dist/* -R "$GITHUB_REPOSITORY" \
+            --title "Smart WiFi $GITHUB_REF_NAME" --generate-notes
