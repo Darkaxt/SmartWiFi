@@ -58,7 +58,7 @@ jobs:
           echo "SMARTWIFI_STORE_FILE=$KEYSTORE_PATH" >> "$GITHUB_ENV"
 
       - name: Test and build signed release APK
-        run: ./gradlew --no-daemon :app:testReleaseUnitTest :app:lintVitalRelease :app:assembleRelease
+        run: ./gradlew --no-daemon :app:testDebugUnitTest :app:lintVitalRelease :app:assembleRelease
 
       - name: Verify package ID and signature
         run: |
