@@ -5,8 +5,10 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.ServiceInfo
 import android.net.ConnectivityManager
 import android.net.Network
@@ -76,6 +78,14 @@ class SwitchService : Service() {
         }
     }
 
+    /** Unlocking the phone triggers an immediate fresh scan and evaluation. */
+    private val screenOnReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            lastScanRequestAt = 0
+            wake.trySend(Unit)
+        }
+    }
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
@@ -88,6 +98,7 @@ class SwitchService : Service() {
             NetworkRequest.Builder().addTransportType(NetworkCapabilities.TRANSPORT_WIFI).build(),
             netCallback,
         )
+        registerReceiver(screenOnReceiver, IntentFilter(Intent.ACTION_SCREEN_ON))
         StateHub.update { it.copy(running = true) }
         StateHub.log("Service started")
         scope.launch { loop() }
@@ -105,6 +116,7 @@ class SwitchService : Service() {
 
     override fun onDestroy() {
         runCatching { getSystemService(ConnectivityManager::class.java).unregisterNetworkCallback(netCallback) }
+        runCatching { unregisterReceiver(screenOnReceiver) }
         scope.cancel()
         ShizukuShell.unbind()
         StateHub.update { it.copy(running = false) }
@@ -116,7 +128,8 @@ class SwitchService : Service() {
         while (true) {
             runCatching { tick() }.onFailure { StateHub.log("Tick failed: ${it.message}") }
             val screenOn = getSystemService(PowerManager::class.java).isInteractive
-            withTimeoutOrNull(if (screenOn) 10_000L else 30_000L) { wake.receive() }
+            // Screen off only matters for lost internet, which the network callback wakes us for.
+            withTimeoutOrNull(if (screenOn || wifiValidated == false) 10_000L else 60_000L) { wake.receive() }
         }
     }
 
@@ -149,9 +162,8 @@ class SwitchService : Service() {
         var scans = ShizukuShell.wifi("list-scan-results")?.let(::parseScanResults).orEmpty()
         val newest = scans.minOfOrNull { it.ageSeconds }
         val screenOn = getSystemService(PowerManager::class.java).isInteractive
-        val weak = (status.rssi ?: -100) < -68 || wifiValidated == false
         val staleAfter = if (screenOn) 20.0 else 60.0
-        if ((newest == null || newest > staleAfter) && (screenOn || weak) && t - lastScanRequestAt > 15_000) {
+        if ((newest == null || newest > staleAfter) && (screenOn || wifiValidated == false) && t - lastScanRequestAt > 15_000) {
             lastScanRequestAt = t
             ShizukuShell.wifi("start-scan")
             delay(4_000)
@@ -159,7 +171,7 @@ class SwitchService : Service() {
         }
 
         val unvalidated = if (wifiValidated == false) unvalidatedSince else null
-        val eval = engine.evaluate(now(), status, scans, saved, unvalidated)
+        val eval = engine.evaluate(now(), status, scans, saved, unvalidated, passive = !screenOn)
         publish(status, eval.currentScore, eval.candidates, eval.decision.reason, scans.minOfOrNull { it.ageSeconds })
 
         if (t - lastHeartbeatAt >= HEARTBEAT_MS) {

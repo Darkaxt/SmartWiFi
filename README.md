@@ -21,6 +21,8 @@ LAN, where Android's own selection keeps clinging to a weak network.
   app switches straight away.
 - If the new network doesn't connect and validate within 30 seconds, it's penalized
   for 5 minutes.
+- With the screen off it only switches if Wi-Fi loses internet, and only scans then. Turning
+  the screen on triggers an immediate scan and evaluation.
 - The app never toggles Wi-Fi or mobile data and leaves VPNs alone.
 
 ## Requirements

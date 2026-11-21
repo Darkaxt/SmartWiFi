@@ -112,6 +112,8 @@ class Engine(var settings: EngineSettings = EngineSettings()) {
         scans: List<ScanEntry>,
         saved: List<SavedNetwork>,
         unvalidatedSince: Long?,
+        /** Screen off: only a lost internet connection justifies a switch. */
+        passive: Boolean = false,
     ): Evaluation {
         val list = candidates(status, scans, saved, now)
         val currentScore = currentScore(status, scans)
@@ -143,6 +145,7 @@ class Engine(var settings: EngineSettings = EngineSettings()) {
         if (unvalidatedSince != null && now - unvalidatedSince >= settings.unvalidatedGraceMs) {
             return Evaluation(Decision.Switch(best, "Current Wi-Fi has no internet"), currentScore, list)
         }
+        if (passive) return stay("Screen off; only switching if internet is lost")
 
         val cur = currentScore ?: return stay("Current signal unknown")
         if (!upgrade && best.score < cur + settings.marginDb) return stay("Current network is best (score $cur)")

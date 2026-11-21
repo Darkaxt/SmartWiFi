@@ -122,6 +122,15 @@ class EngineTest {
         assertTrue(e.evaluate(10_000, status, scans, saved, null).decision is Decision.Switch)
     }
 
+    @Test fun screenOffOnlySwitchesForLostInternet() {
+        val e = Engine()
+        val status = connected("DIGIFIBRA-PLUS-skt2", 18, 5260, -70)
+        val scans = listOf(bss("GL-5G", 5220, -30))
+        repeat(3) { assertTrue(e.evaluate(it * 10_000L, status, scans, saved, null, passive = true).decision is Decision.Stay) }
+        val d = e.evaluate(40_000, status, scans, saved, unvalidatedSince = 20_000, passive = true).decision
+        assertTrue(d is Decision.Switch)
+    }
+
     @Test fun highBandBonusOnlyWhileUsable() {
         val s = EngineSettings()
         assertEquals(-50 + 10, score(s, 5200, -50))
