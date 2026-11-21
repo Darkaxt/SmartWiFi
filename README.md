@@ -11,6 +11,9 @@ LAN, where Android's own selection keeps clinging to a weak network.
 
 - Score = RSSI + band bonus (5 GHz +10, 6 GHz +12). The bonus only applies while the
   signal is usable (≥ −72 dBm), so a fading 6 GHz link doesn't beat solid 5 GHz.
+- 2.4 GHz is a fallback. The app never moves to 2.4 GHz while a 5/6 GHz link is usable
+  (≥ −72 dBm, or ≥ −76 dBm for the link you're already on). It leaves 2.4 GHz as soon as a usable
+  5/6 GHz network appears, even if that network is weaker. You can turn this off in the app.
 - Candidates must be saved, recently scanned, at least −78 dBm, and match the saved
   security type. Open networks are ignored unless enabled.
 - A switch needs a margin (default 8) confirmed on two consecutive checks, with a

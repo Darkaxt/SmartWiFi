@@ -26,10 +26,15 @@ class Prefs(context: Context) {
         get() = p.getBoolean("includeOpen", false)
         set(v) = p.edit().putBoolean("includeOpen", v).apply()
 
+    var preferHighBand: Boolean
+        get() = p.getBoolean("preferHighBand", true)
+        set(v) = p.edit().putBoolean("preferHighBand", v).apply()
+
     fun engineSettings() = EngineSettings(
         marginDb = marginDb,
         bonus5Db = bonus5Db,
         bonus6Db = bonus6Db,
         includeOpenNetworks = includeOpen,
+        preferHighBand = preferHighBand,
     )
 }

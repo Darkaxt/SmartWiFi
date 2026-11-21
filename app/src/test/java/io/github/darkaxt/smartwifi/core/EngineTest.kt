@@ -88,6 +88,40 @@ class EngineTest {
         assertTrue(e.evaluate(41_000, status, scans, saved, null).decision is Decision.Switch)
     }
 
+    @Test fun neverDropsFromUsable5GhzTo24Ghz() {
+        // Live log 2026-11-21 21:56: GL-5G at -64 was swapped for GL 2.4 GHz at -45.
+        val e = Engine()
+        val status = connected("GL-5G", 63, 5220, -64)
+        val scans = listOf(bss("GL", 2422, -45), bss("DIGIFIBRA-skt2", 2442, -50))
+        repeat(4) { assertTrue(e.evaluate(it * 10_000L, status, scans, saved, null).decision is Decision.Stay) }
+    }
+
+    @Test fun fallsBackTo24GhzWhenNoHighBandIsUsable() {
+        val e = Engine()
+        val status = connected("GL-5G", 63, 5220, -79)
+        val scans = listOf(bss("GL", 2422, -50), bss("DIGIFIBRA-PLUS-skt2", 5260, -77))
+        e.evaluate(0, status, scans, saved, null)
+        val d = e.evaluate(10_000, status, scans, saved, null).decision as Decision.Switch
+        assertEquals(64, d.target.networkId)
+    }
+
+    @Test fun leaves24GhzForAnyUsable5GhzEvenIfWeaker() {
+        val e = Engine()
+        val status = connected("GL", 64, 2422, -40)
+        val scans = listOf(bss("DIGIFIBRA-PLUS-skt2", 5260, -70), bss("DIGIFIBRA-skt2", 2442, -35))
+        assertTrue(e.evaluate(0, status, scans, saved, null).decision is Decision.Stay)
+        val d = e.evaluate(10_000, status, scans, saved, null).decision as Decision.Switch
+        assertEquals(18, d.target.networkId)
+    }
+
+    @Test fun preferHighBandCanBeTurnedOff() {
+        val e = Engine(EngineSettings(preferHighBand = false))
+        val status = connected("GL-5G", 63, 5220, -64)
+        val scans = listOf(bss("GL", 2422, -45))
+        e.evaluate(0, status, scans, saved, null)
+        assertTrue(e.evaluate(10_000, status, scans, saved, null).decision is Decision.Switch)
+    }
+
     @Test fun highBandBonusOnlyWhileUsable() {
         val s = EngineSettings()
         assertEquals(-50 + 10, score(s, 5200, -50))

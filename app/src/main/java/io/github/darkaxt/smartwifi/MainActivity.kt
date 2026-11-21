@@ -150,6 +150,11 @@ private fun Screen(prefs: Prefs) {
                 IntSlider("Switch margin", prefs.marginDb, 3..20) { prefs.marginDb = it }
                 IntSlider("5 GHz bonus", prefs.bonus5Db, 0..25) { prefs.bonus5Db = it }
                 IntSlider("6 GHz bonus", prefs.bonus6Db, 0..25) { prefs.bonus6Db = it }
+                var high by remember { mutableStateOf(prefs.preferHighBand) }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Use 2.4 GHz only when no 5/6 GHz is usable", Modifier.weight(1f))
+                    Switch(checked = high, onCheckedChange = { high = it; prefs.preferHighBand = it })
+                }
                 var open by remember { mutableStateOf(prefs.includeOpen) }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text("Include open networks", Modifier.weight(1f))

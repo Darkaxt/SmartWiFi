@@ -19,6 +19,13 @@ data class EngineSettings(
     /** How long the current Wi-Fi may lack validated internet before an immediate switch. */
     val unvalidatedGraceMs: Long = 15_000,
     val includeOpenNetworks: Boolean = false,
+    /**
+     * Treat 2.4 GHz as a fallback: never move to it while a 5/6 GHz link (current or candidate)
+     * is usable, and move up from 2.4 GHz as soon as a usable 5/6 GHz network appears.
+     */
+    val preferHighBand: Boolean = true,
+    /** On 5/6 GHz, keep refusing 2.4 GHz until the current signal is this far below [highBandMinRssi]. */
+    val highBandHysteresisDb: Int = 4,
 )
 
 data class Candidate(
@@ -107,8 +114,19 @@ class Engine(var settings: EngineSettings = EngineSettings()) {
         unvalidatedSince: Long?,
     ): Evaluation {
         val list = candidates(status, scans, saved, now)
-        val best = list.firstOrNull()
         val currentScore = currentScore(status, scans)
+        val curBand = (status.frequency ?: scans.firstOrNull { it.bssid == status.bssid }?.frequency)?.let(Band::of)
+        val curRssi = status.rssi ?: scans.firstOrNull { it.bssid == status.bssid }?.rssi
+
+        // 5 GHz floor: 2.4 GHz candidates only count when no 5/6 GHz link is usable.
+        val usableHigh = list.filter { it.band != Band.GHZ_2_4 && it.rssi >= settings.highBandMinRssi }
+        val holdingHigh = curBand != null && curBand != Band.GHZ_2_4 && curRssi != null &&
+            curRssi >= settings.highBandMinRssi - settings.highBandHysteresisDb
+        val eligible = if (settings.preferHighBand && (holdingHigh || usableHigh.isNotEmpty())) {
+            list.filter { it.band != Band.GHZ_2_4 }
+        } else list
+        val upgrade = settings.preferHighBand && curBand == Band.GHZ_2_4 && usableHigh.isNotEmpty()
+        val best = if (upgrade) usableHigh.first() else eligible.firstOrNull()
 
         fun stay(reason: String, resetPending: Boolean = true): Evaluation {
             if (resetPending) { pendingTarget = null; pendingCount = 0 }
@@ -118,21 +136,25 @@ class Engine(var settings: EngineSettings = EngineSettings()) {
         if (!status.enabled) return stay("Wi-Fi is off")
         if (!status.connected) return stay("Not connected; leaving auto-join to Android")
         if (now - lastSwitchAt < settings.cooldownMs) return stay("Cooling down after a switch", resetPending = false)
-        if (best == null) return stay("No better saved network in range")
+        if (best == null) {
+            return stay(if (eligible.size < list.size) "Staying on ${curBand?.label}; 2.4 GHz is fallback only" else "No better saved network in range")
+        }
 
         if (unvalidatedSince != null && now - unvalidatedSince >= settings.unvalidatedGraceMs) {
             return Evaluation(Decision.Switch(best, "Current Wi-Fi has no internet"), currentScore, list)
         }
 
         val cur = currentScore ?: return stay("Current signal unknown")
-        if (best.score < cur + settings.marginDb) return stay("Current network is best (score $cur)")
+        if (!upgrade && best.score < cur + settings.marginDb) return stay("Current network is best (score $cur)")
 
         if (pendingTarget == best.networkId) pendingCount++ else { pendingTarget = best.networkId; pendingCount = 1 }
         if (pendingCount < settings.confirmations) {
             return stay("Confirming ${best.ssid} (${best.score} vs $cur)", resetPending = false)
         }
+        val why = if (upgrade) "leaving 2.4 GHz for ${best.band.label} ${best.ssid} (${best.rssi} dBm)"
+            else "${best.ssid} scores ${best.score} vs $cur"
         return Evaluation(
-            Decision.Switch(best, "${best.ssid} scores ${best.score} vs $cur"),
+            Decision.Switch(best, why),
             currentScore,
             list,
         )
